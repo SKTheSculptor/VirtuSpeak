@@ -12,6 +12,12 @@ export class AudioRecorder {
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      
+      // Explicitly resume for mobile compatibility
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+
       this.sampleRate = 16000;
       
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
