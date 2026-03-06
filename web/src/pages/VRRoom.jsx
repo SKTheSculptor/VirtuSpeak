@@ -7,7 +7,7 @@ import { AudioRecorder } from '../utils/AudioRecorder';
 
 const ROOM_CONFIGS = {
   seminar: {
-    id: '36cb0c4af0f94f9ca233658204858305',
+    id: '57e962e00d0a4d96ac2a6bcc04ec24d3',
     title: 'Seminar Hall'
   },
   interview: {
