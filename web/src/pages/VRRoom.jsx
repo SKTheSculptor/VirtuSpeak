@@ -11,7 +11,7 @@ const ROOM_CONFIGS = {
     title: 'Seminar Hall'
   },
   interview: {
-    id: 'e52228ae312a477ab9021bea05ae12b9',
+    id: 'a9aa811e72b047ed970939b16e05b057',
     title: 'Interview Room',
     requiresResume: true
   },
