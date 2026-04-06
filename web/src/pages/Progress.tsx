@@ -155,39 +155,77 @@ const ProgressPage: React.FC = () => {
     const insights = [];
     const latestDate = new Date(latest.timestamp).toLocaleDateString();
     
-    if (improvementRate > 2) {
-      insights.push(`On ${latestDate}, you outperformed your average by ${improvementRate.toFixed(1)}%! Keep up the momentum.`);
-    } else if (improvementRate < -2) {
-      insights.push("Your last session was slightly below your usual standard. This is a great opportunity to analyze what felt different.");
+    // Improvement Insights
+    if (improvementRate > 3) {
+      insights.push(`On ${latestDate}, you outperformed your previous average by ${improvementRate.toFixed(1)}%! Great momentum.`);
+    } else if (improvementRate < -3) {
+      insights.push(`Your recent performance score (${overallScore.toFixed(1)}) is slightly below your usual standard. Analyze the feedback to pinpoint the cause.`);
     } else {
-      insights.push("You are showing remarkable stability in your performance. Consistency builds mastery!");
+      const stabilityMsgs = [
+        "Your performance remains very stable. Consistent practice is building your muscle memory!",
+        "You are maintaining a steady, professional standard in your delivery.",
+        "Your communication metrics are consistent, showing reliable skill retention."
+      ];
+      insights.push(stabilityMsgs[reports.length % stabilityMsgs.length]);
     }
 
+    // Confidence Insights
     if (latest.confidenceScore > 80 && latest.confidenceScore > avgPrevScore) {
-      insights.push("Your vocal presence is reaching new heights. Your confidence score is now above your historical average.");
+      insights.push("Your vocal presence is reaching new heights. Your confidence score is now trending upwards!");
+    } else if (latest.confidenceScore < 60) {
+      insights.push("Your confidence was lower than usual in this session. Focus on your posture and breath to project more authority.");
     }
 
+    // Filler Word Insights
     if (latest.fillerWordCount === 0) {
-      insights.push("Total elimination of fillers! Your latest session was perfectly concise.");
+      insights.push("Excellent conciseness! You used zero filler words in your latest session.");
     } else if (previous.length > 0 && latest.fillerWordCount < previous[previous.length-1].fillerWordCount) {
       insights.push(`Progress detected: You reduced your filler word count from ${previous[previous.length-1].fillerWordCount} to ${latest.fillerWordCount}.`);
-    } else if (latest.fillerWordCount > 5) {
-      insights.push(`We noticed ${latest.fillerWordCount} filler words in your last session. Focus on pausing instead of using 'um' or 'ah'.`);
+    } else if (latest.fillerWordCount > 6) {
+      insights.push(`We noticed ${latest.fillerWordCount} filler words in your last session. Use intentional silence instead of 'um' or 'ah'.`);
     }
 
+    // Clarity Insights
     if (latest.clarityScore > 85) {
-      insights.push("Your articulation is exceptionally clear. Keep focusing on those vowel sounds!");
+      insights.push("Your articulation is exceptionally crisp. Your clarity score is in the top bracket!");
+    } else if (latest.clarityScore < 60) {
+      insights.push("Your articulation was a bit low. Focus on enunciating each word more deliberately.");
     }
     
     // 6. Suggestions (Dynamic based on weakest metrics in LATEST session)
     const weakMetrics = [...skillData].sort((a, b) => a.A - b.A).slice(0, 2);
     const suggestions = weakMetrics.map(m => {
-      if (m.subject === 'Conciseness') return "Try the 'Silent Pause' technique: Whenever you feel a filler word coming, just take a breath instead.";
-      if (m.subject === 'Fluency') return "Your speaking rate (WPM) is a bit uneven. Practice reading simple text at a constant pace.";
-      if (m.subject === 'Confidence') return "Boost your confidence by recording yourself and focusing on standing tall while speaking.";
-      if (m.subject === 'Clarity') return "Warm up your jaw and tongue with 2 minutes of articulation exercises before your next session.";
-      if (m.subject === 'Engagement') return "Vary your pitch more often to make your speech sound more dynamic and engaging.";
-      return `Focus on improving your ${m.subject} by practicing specific drills.`;
+      const options = {
+        'Conciseness': [
+          "Try the 'Silent Pause' technique: Whenever you feel a filler word coming, just take a breath instead.",
+          "Record yourself for 2 minutes daily and count your filler words. Self-awareness is the first step to elimination.",
+          "Slow down your speech slightly to give your brain more time to find the next word without using fillers."
+        ],
+        'Fluency': [
+          "Your speaking rate (WPM) is a bit uneven. Practice reading simple text at a constant pace.",
+          "Try reading poetry or rhythmic text aloud to improve your natural speech cadence.",
+          "Focus on connecting short sentences into longer, fluid thoughts."
+        ],
+        'Confidence': [
+          "Boost your confidence by recording yourself while standing tall and making intentional hand gestures.",
+          "Practice your opening 30 seconds multiple times until it's effortless. A strong start builds momentum.",
+          "Vary your pitch and volume to make your voice sound more dynamic and certain."
+        ],
+        'Clarity': [
+          "Warm up your jaw and tongue with 2 minutes of articulation exercises before your next session.",
+          "Practice 'over-enunciating' your words in a slow drill to improve your clarity score.",
+          "Focus on making your ending consonants (like 't', 'd', 'k') more distinct."
+        ],
+        'Engagement': [
+          "Vary your pitch more often to make your speech sound more dynamic and engaging to your audience.",
+          "Try to incorporate more storytelling or specific examples to keep the audience's attention.",
+          "Focus on your vocal energy. A more enthusiastic tone naturally increases engagement scores."
+        ]
+      };
+      
+      const category = m.subject as keyof typeof options;
+      const suggestionsList = options[category] || [`Focus on improving your ${m.subject} by practicing specific drills.`];
+      return suggestionsList[reports.length % suggestionsList.length];
     });
 
     return {
