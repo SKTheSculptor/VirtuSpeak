@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import uvicorn
 import shutil
 import os
+import traceback
 from typing import List, Dict
 from dotenv import load_dotenv
 
@@ -41,23 +42,27 @@ def read_root():
 
 @app.post("/analyze-speech")
 def analyze_speech(file: UploadFile = File(...)):
-    # ... (existing code)
+    print(f"--- Speech Analysis Started: {file.filename} ---")
     temp_file_path = f"temp_{file.filename}"
     try:
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
         file_size = os.path.getsize(temp_file_path)
+        print(f"Received file size: {file_size} bytes")
         if file_size == 0:
              return {"error": "Received empty audio file"}
 
         result = analyze_audio(temp_file_path)
+        print(f"Analysis Result: {result}")
         
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
         
         return result
     except Exception as e:
+        print(f"Analyze Speech Error: {e}")
+        print(traceback.format_exc())
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
         return {"error": f"Server Error: {str(e)}"}
@@ -91,7 +96,6 @@ async def upload_resume(file: UploadFile = File(...)):
         
         return {"resume_text": text, "questions": questions}
     except Exception as e:
-        import traceback
         error_msg = f"Resume Processing Error: {str(e)}"
         print(error_msg)
         print(traceback.format_exc())
@@ -105,7 +109,8 @@ async def speech_to_text(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, buffer)
         
         text = interview_agent.speech_to_text(temp_path)
-        os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         return {"text": text}
     except Exception as e:
         if os.path.exists(temp_path):
@@ -124,7 +129,6 @@ async def text_to_speech(request: TTSRequest):
         audio_b64 = base64.b64encode(audio_content).decode('utf-8')
         return {"audio": audio_b64}
     except Exception as e:
-        import traceback
         error_msg = f"TTS Error: {str(e)}"
         print(error_msg)
         print(traceback.format_exc())
@@ -148,6 +152,7 @@ async def evaluate(request: EvaluationRequest):
         return evaluation
     except Exception as e:
         print(f"Evaluation Error: {e}")
+        print(traceback.format_exc())
         return {"error": str(e)}
 
 @app.post("/interview/analyze-answer")
@@ -175,7 +180,9 @@ async def analyze_answer(file: UploadFile = File(...)):
         except Exception as stt_e:
             print(f"Backend STT Quota/Error: {stt_e}")
 
-        os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
         return {
             "text": transcript,
             "speech_analysis": speech_metrics
@@ -184,7 +191,10 @@ async def analyze_answer(file: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
         print(f"Fatal Answer Analysis Error: {e}")
+        print(traceback.format_exc())
         return {"error": str(e)}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("--- VirtuSpeak Backend Starting ---")
+    print("Local access: http://127.0.0.1:8000")
+    uvicorn.run(app, host="127.0.0.1", port=8000)

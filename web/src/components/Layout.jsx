@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { LayoutDashboard, Settings, LogOut, Moon, Sun, Mic, FileText } from 'lucide-react';
+import { LayoutDashboard, Settings, LogOut, Moon, Sun, Mic, FileText, BarChart2 } from 'lucide-react';
 
 const Layout = ({ children }) => {
   const { logout, user } = useAuth();
@@ -56,6 +56,23 @@ const Layout = ({ children }) => {
           >
             <LayoutDashboard size={20} />
             Dashboard
+          </NavLink>
+          <NavLink
+            to="/progress"
+            style={({ isActive }) => ({
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              padding: '0.75rem 1rem',
+              borderRadius: '8px',
+              backgroundColor: isActive ? 'var(--bg-secondary)' : 'transparent',
+              color: isActive ? 'var(--primary-color)' : 'var(--text-secondary)',
+              fontWeight: isActive ? 600 : 500,
+              transition: 'all 0.2s',
+            })}
+          >
+            <BarChart2 size={20} />
+            Progress
           </NavLink>
           <NavLink
             to="/reports"

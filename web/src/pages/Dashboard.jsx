@@ -1,15 +1,49 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Presentation, Mic, Briefcase, Users, Monitor } from 'lucide-react';
+import { Presentation, Mic, Briefcase, Users, Monitor, PlayCircle, PlusCircle } from 'lucide-react';
+import Button from '../components/Button';
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const [debugMsg, setDebugMsg] = useState('');
+
+  // Debug helper to verify reports/progress page
+  const generateTestReport = () => {
+    const testReport = {
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      name: "Test Session (Manual)",
+      data: {
+        confidence: 85,
+        fluency: 78,
+        clarity: 92,
+        tempo: 155,
+        fluency_score: 82,
+        sentiment_score: 88,
+        engagement_score: 90,
+        feedback: ["Great job on this manual test!", "Keep practicing!"]
+      }
+    };
+    
+    const existing = JSON.parse(localStorage.getItem('speech_reports') || '[]');
+    localStorage.setItem('speech_reports', JSON.stringify([testReport, ...existing]));
+    setDebugMsg('Test report generated! Check the Progress or Reports page.');
+    setTimeout(() => setDebugMsg(''), 3000);
+  };
 
   return (
     <div>
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '1.8rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Dashboard</h1>
-        <p style={{ color: 'var(--text-secondary)' }}>Select an environment to start your speech training.</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+        <div>
+          <h1 style={{ fontSize: '1.8rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Dashboard</h1>
+          <p style={{ color: 'var(--text-secondary)' }}>Select an environment to start your speech training.</p>
+        </div>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          {debugMsg && <span style={{ color: 'var(--primary-color)', fontSize: '0.8rem', fontWeight: 'bold' }}>{debugMsg}</span>}
+          <Button onClick={generateTestReport} variant="secondary" size="sm" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <PlusCircle size={16} /> Generate Test Data
+          </Button>
+        </div>
       </div>
 
       <div style={{ 

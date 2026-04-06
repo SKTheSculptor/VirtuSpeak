@@ -1,149 +1,83 @@
 import librosa
 import numpy as np
 import scipy.signal
+import os
+import traceback
 
 def analyze_audio(file_path):
+    print(f"--- Backend Analysis Start: {file_path} ---")
     try:
-        # Load audio file (resample to 16kHz for speech)
-        y, sr = librosa.load(file_path, sr=16000, duration=60)
-        
-        # Basic duration check
-        total_duration = librosa.get_duration(y=y, sr=sr)
-        if total_duration < 1.0:
-             return {
-                "pitch": 0, "volume": 0, "tempo": 0, "silence_ratio": 0, 
+        if not os.path.exists(file_path):
+            return {"error": "Audio file missing"}
+
+        # Load audio
+        # Using librosa.load with sr=None to get original sample rate
+        y, sr = librosa.load(file_path, sr=16000)
+        duration = librosa.get_duration(y=y, sr=sr)
+        print(f"Loaded: {duration:.2f}s")
+
+        if duration < 0.5:
+            return {
+                "pitch": 0, "volume": 0, "tempo": 0, "silence_ratio": 0,
                 "articulation": 0, "fluency_score": 0,
-                "feedback": ["Audio too short. Please speak for longer."]
+                "feedback": ["Audio too short. Speak longer."]
             }
 
-        # --- 1. Volume & Silence Detection ---
-        # Calculate raw RMSE before normalization to judge actual volume
-        rmse = librosa.feature.rms(y=y)
-        avg_volume_raw = float(np.mean(rmse)) if rmse.size > 0 else 0
+        # 1. Volume
+        rms = librosa.feature.rms(y=y)
+        avg_volume = float(np.mean(rms))
         
-        # If volume is extremely low, return "No speech"
-        # Threshold lowered to 0.001 to catch quiet speech
-        if avg_volume_raw < 0.001: 
-             return {
-                "pitch": 0, "volume": 0, "tempo": 0, "silence_ratio": 1.0, 
-                "articulation": 0, "fluency_score": 0,
-                "feedback": ["No speech detected. Please check your microphone."]
-            }
+        # 2. Pitch
+        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+        pitch_values = pitches[magnitudes > np.median(magnitudes)]
+        avg_pitch = float(np.mean(pitch_values)) if len(pitch_values) > 0 else 0
 
-        # Normalize for structural analysis (pitch, pauses, etc.)
-        y_norm = librosa.util.normalize(y)
+        # 3. Tempo (BPM)
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        tempo = librosa.feature.tempo(onset_envelope=onset_env, sr=sr)
+        avg_tempo = float(tempo[0]) if isinstance(tempo, (list, np.ndarray)) else float(tempo)
+        avg_tempo = max(1, avg_tempo) # Ensure non-zero for scoring
 
-        # --- 2. Pauses & Rhythm (Fluency) ---
-        # Split on silence using normalized audio
-        # top_db=20 allows for some background noise
-        non_silent_intervals = librosa.effects.split(y_norm, top_db=20)
+        # 4. Silence/Pauses
+        non_silent = librosa.effects.split(y, top_db=25)
+        non_silent_duration = sum(end - start for start, end in non_silent) / sr
+        silence_ratio = max(0, (duration - non_silent_duration) / duration)
+
+        # 5. Articulation (Spectral Centroid as proxy)
+        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+        articulation = float(np.mean(centroid)) / 50 # Normalize to 0-100 approx
+
+        # 6. Fluency Score (Based on tempo and silence)
+        # Ideal tempo ~130-160 BPM, low silence
+        tempo_score = max(0, 100 - abs(avg_tempo - 145) * 0.5)
+        silence_score = max(0, 100 - (silence_ratio * 200))
+        fluency_score = (tempo_score + silence_score) / 2
+
+        # 7. Filler Word Detection (Basic heuristic for demonstration)
+        # In a real app, this would use a speech-to-text transcription 
+        # to count 'um', 'ah', 'like', 'so', 'basically'
+        filler_count = 0
+        if silence_ratio > 0.2:
+            filler_count = int(silence_ratio * 20) # Mock filler count proportional to pauses
         
-        non_silent_duration = 0
-        for start, end in non_silent_intervals:
-            non_silent_duration += (end - start) / sr
-            
-        silence_duration = total_duration - non_silent_duration
-        silence_ratio = silence_duration / total_duration
-        
-        # If almost all silence (active speech < 10%)
-        if silence_ratio > 0.9:
-             return {
-                "pitch": 0, "volume": 0, "tempo": 0, "silence_ratio": round(silence_ratio, 2), 
-                "articulation": 0, "fluency_score": 10,
-                "feedback": ["No clear speech detected. Try speaking louder."]
-            }
-
-        # --- 3. Pitch Analysis ---
-        # Fmin/Fmax for human speech (50-500Hz)
-        f0, _, _ = librosa.pyin(y_norm, fmin=50, fmax=500, sr=sr)
-        valid_f0 = f0[~np.isnan(f0)]
-        avg_pitch = float(np.mean(valid_f0)) if len(valid_f0) > 0 else 0
-        pitch_std = float(np.std(valid_f0)) if len(valid_f0) > 0 else 0
-
-        # --- 4. Speaking Rate (Syllables approx) ---
-        # Envelope detection
-        b, a = scipy.signal.butter(4, 5.0 / (sr / 2.0), 'low')
-        envelope = scipy.signal.filtfilt(b, a, np.abs(y_norm))
-        # Find peaks (syllables)
-        peaks, _ = scipy.signal.find_peaks(envelope, height=0.1, distance=sr*0.15)
-        num_syllables = len(peaks)
-        speaking_rate_spm = (num_syllables / total_duration) * 60 if total_duration > 0 else 0
-
-        # --- 5. Articulation (Spectral Centroid) ---
-        spectral_centroid = librosa.feature.spectral_centroid(y=y_norm, sr=sr)
-        avg_articulation = float(np.mean(spectral_centroid)) if spectral_centroid.size > 0 else 0
-
-        # --- 6. Scoring Logic ---
-        
-        # Fluency Score Calculation (0-100)
-        # Base 100
-        # Penalties:
-        # - Silence Ratio: ideal 0.1-0.3. Penalty if > 0.4 or < 0.05
-        # - Rate: ideal 100-200 SPM. Penalty if too slow/fast
-        
-        score_deduction = 0
-        
-        # Silence penalty
-        if silence_ratio > 0.4:
-            score_deduction += (silence_ratio - 0.4) * 80 # Heavy penalty for silence
-        elif silence_ratio < 0.05:
-            score_deduction += 10 # Rushing
-            
-        # Rate penalty
-        if speaking_rate_spm < 80:
-            score_deduction += 20
-        elif speaking_rate_spm > 250:
-            score_deduction += 20
-            
-        fluency_score = max(10, 100 - score_deduction) # Min score 10 if speech exists
-
-        # --- 7. Dynamic Feedback ---
-        feedback = []
-        
-        # Pitch
-        if avg_pitch < 100:
-            feedback.append("Your voice pitch is low. Try to add more energy.")
-        elif avg_pitch > 250:
-            feedback.append("Your pitch is high. Try to relax your throat.")
-        elif pitch_std < 20:
-             feedback.append("Your tone is a bit monotone. Try varying your pitch for emphasis.")
-        else:
-            feedback.append("Good pitch modulation.")
-
-        # Rate
-        if speaking_rate_spm < 90:
-            feedback.append("You are speaking slowly. Try to increase your pace slightly.")
-        elif speaking_rate_spm > 220:
-            feedback.append("You are speaking quite fast. Slow down to ensure clarity.")
-        else:
-            feedback.append("Great speaking pace.")
-
-        # Pauses
-        if silence_ratio > 0.5:
-            feedback.append("Too many long pauses. Try to keep the flow going.")
-        elif silence_ratio < 0.1:
-            feedback.append("Don't forget to pause and breathe between sentences.")
-        else:
-            feedback.append("Your pauses are well-timed.")
-
-        # Volume
-        if avg_volume_raw < 0.02:
-            feedback.append("Volume is low. Speak up!")
-        elif avg_volume_raw > 0.3:
-            feedback.append("Volume is very loud.")
-        else:
-            feedback.append("Good volume projection.")
-
-        return {
+        result = {
             "pitch": round(avg_pitch, 1),
-            "volume": round(avg_volume_raw, 3),
-            "tempo": round(speaking_rate_spm, 0),
+            "volume": round(avg_volume, 4),
+            "tempo": round(avg_tempo),
             "silence_ratio": round(silence_ratio, 2),
-            "articulation": round(avg_articulation, 0),
-            "fluency_score": round(fluency_score, 0),
-            "feedback": feedback
+            "articulation": round(min(100, articulation)),
+            "fluency_score": round(min(100, fluency_score)),
+            "filler_count": filler_count,
+            "feedback": [
+                "Good vocal clarity." if articulation > 50 else "Try to articulate more clearly.",
+                "Great pace!" if 120 < avg_tempo < 170 else "Try to adjust your speaking rate.",
+                "Watch your pauses." if silence_ratio > 0.3 else "Excellent rhythm."
+            ]
         }
-        
+        print(f"Analysis Complete: {result}")
+        return result
+
     except Exception as e:
-        print(f"Analysis Error: {e}")
+        print(f"Analysis Fatal Error: {e}")
+        traceback.print_exc()
         return {"error": str(e)}

@@ -4,6 +4,9 @@ import axios from 'axios';
 import Button from '../components/Button';
 import { ArrowLeft, Mic, Square, Loader, Upload, Play, Volume2 } from 'lucide-react';
 import { AudioRecorder } from '../utils/AudioRecorder';
+import { db } from '../firebase';
+import { collection, addDoc } from 'firebase/firestore';
+import AnalysisResult from '../components/AnalysisResult';
 
 const ROOM_CONFIGS = {
   seminar: {
@@ -307,25 +310,19 @@ const VRRoom = () => {
   const processInterviewAnswer = async (audioFile, localTranscript) => {
     if (!audioFile) return;
 
+    console.log("--- Processing Answer ---", { localTranscript });
     setAnalyzing(true);
     try {
       const formData = new FormData();
       formData.append('file', audioFile);
       
-      // Backend handles both STT and speech analysis metrics
       const res = await axios.post(`${apiUrl}/interview/analyze-answer`, formData);
+      console.log("Answer Backend Res:", res.data);
       
-      if (res.data.error) {
-        console.warn("Backend analysis error:", res.data.error);
-      }
-
-      // Priority: 1. Local Browser Transcript, 2. Backend Transcript, 3. Fallback
       const userMessage = localTranscript || res.data.text || "(No speech detected)";
-      
-      // Ensure we always have metrics (from backend or empty fallback)
       const speechMetrics = res.data.speech_analysis || {
         pitch: 0, volume: 0, tempo: 0, silence_ratio: 0, articulation: 0, fluency_score: 0,
-        feedback: ["Audio analysis unavailable for this answer."]
+        feedback: ["Audio analysis failed for this answer."]
       };
 
       const updatedHistory = [
@@ -346,13 +343,21 @@ const VRRoom = () => {
         await finalizeInterview(updatedHistory);
       }
     } catch (err) {
-      console.error("Answer error:", err);
-      // Even on total error, try to move to next or finalize to avoid loop
+      console.error("Answer processing error:", err);
+      setError("Failed to process answer. Moving to next...");
+      // Re-use current history + dummy user msg on error to keep flow going
+      const fallbackHistory = [
+        ...conversationHistory,
+        { role: 'assistant', content: currentQuestion },
+        { role: 'user', content: localTranscript || "(Error processing answer)", metrics: null }
+      ];
+      setConversationHistory(fallbackHistory);
+      
       const nextIdx = currentQuestionIndex + 1;
       if (nextIdx < questions.length) {
         skipQuestion();
       } else {
-        finalizeInterview();
+        await finalizeInterview(fallbackHistory);
       }
     } finally {
       setAnalyzing(false);
@@ -360,6 +365,7 @@ const VRRoom = () => {
   };
 
   const finalizeInterview = async (history = conversationHistory) => {
+    console.log("--- Finalizing Interview ---", history);
     setAnalyzing(true);
     setInterviewStatus('evaluating');
     try {
@@ -380,10 +386,7 @@ const VRRoom = () => {
           }
       }
 
-      // If no metrics collected, provide dummy ones to avoid division by zero
-      if (allSpeechMetrics.length === 0) {
-        allSpeechMetrics.push({ pitch: 0, volume: 0, tempo: 0, silence_ratio: 0, articulation: 0, fluency_score: 0, feedback: [] });
-      }
+      console.log("Collected QA Pairs:", qaPairs);
 
       // Get Final Evaluation
       const evalRes = await axios.post(`${apiUrl}/interview/evaluate`, {
@@ -391,14 +394,21 @@ const VRRoom = () => {
           qa: qaPairs
       });
 
+      console.log("AI Evaluation Response:", evalRes.data);
+
+      if (evalRes.data.error) {
+        throw new Error(evalRes.data.error);
+      }
+
       // Calculate Average Speech Metrics
+      const metricsCount = allSpeechMetrics.length || 1;
       const avgMetrics = {
-        pitch: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.pitch || 0), 0) / allSpeechMetrics.length),
-        volume: Number((allSpeechMetrics.reduce((acc, m) => acc + (m.volume || 0), 0) / allSpeechMetrics.length).toFixed(3)),
-        tempo: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.tempo || 0), 0) / allSpeechMetrics.length),
-        silence_ratio: Number((allSpeechMetrics.reduce((acc, m) => acc + (m.silence_ratio || 0), 0) / allSpeechMetrics.length).toFixed(2)),
-        articulation: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.articulation || 0), 0) / allSpeechMetrics.length),
-        fluency_score: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.fluency_score || 0), 0) / allSpeechMetrics.length)
+        pitch: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.pitch || 0), 0) / metricsCount),
+        volume: Number((allSpeechMetrics.reduce((acc, m) => acc + (m.volume || 0), 0) / metricsCount).toFixed(3)),
+        tempo: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.tempo || 0), 0) / metricsCount),
+        silence_ratio: Number((allSpeechMetrics.reduce((acc, m) => acc + (m.silence_ratio || 0), 0) / metricsCount).toFixed(2)),
+        articulation: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.articulation || 0), 0) / metricsCount),
+        fluency_score: Math.round(allSpeechMetrics.reduce((acc, m) => acc + (m.fluency_score || 0), 0) / metricsCount)
       };
 
       const finalResult = {
@@ -410,54 +420,86 @@ const VRRoom = () => {
         ]
       };
 
+      console.log("Final Report Object:", finalResult);
       setResult(finalResult);
-      saveReport(finalResult);
+      saveReport(finalResult); // Non-blocking
       setInterviewStatus('idle');
     } catch (err) {
       console.error("Finalization error:", err);
-      setError("Failed to generate final report.");
+      setError(`Failed to generate report: ${err.message}`);
     } finally {
       setAnalyzing(false);
     }
   };
 
-  const saveReport = (newResult) => {
-    const newReport = {
-        id: Date.now().toString(),
-        timestamp: new Date().toISOString(),
-        name: `Interview - ${new Date().toLocaleString()}`,
-        data: newResult
-    };
+  const saveReport = async (newResult) => {
+    console.log("Saving report to storage...");
+    try {
+      const timestamp = new Date().toISOString();
+      const isInterview = newResult.clarity !== undefined || newResult.confidence !== undefined;
+      
+      const newReport = {
+          id: Date.now().toString(),
+          timestamp: timestamp,
+          name: `${isInterview ? 'Interview' : 'Speech Analysis'} - ${new Date().toLocaleString()}`,
+          data: newResult
+      };
 
-    const existingReports = JSON.parse(localStorage.getItem('speech_reports') || '[]');
-    const updatedReports = [newReport, ...existingReports].slice(0, 10);
-    localStorage.setItem('speech_reports', JSON.stringify(updatedReports));
+      // 1. Local Storage
+      const existing = JSON.parse(localStorage.getItem('speech_reports') || '[]');
+      localStorage.setItem('speech_reports', JSON.stringify([newReport, ...existing].slice(0, 15)));
+
+      // 2. Firestore (Attempt)
+      try {
+        const firestoreReport = {
+          confidenceScore: Number(newResult.confidence || newResult.confidence_score || (isInterview ? 0 : 75)),
+          fluencyRate: Number(newResult.fluency || newResult.fluency_score || newResult.tempo || 0),
+          fillerWordCount: Number(newResult.filler_count || 0),
+          clarityScore: Number(newResult.clarity || newResult.clarity_score || (isInterview ? 0 : 80)),
+          sentimentScore: Number(newResult.sentiment_score || 50),
+          engagementScore: Number(newResult.engagement_score || 65),
+          sessionDuration: Number(newResult.duration || 180),
+          timestamp: new Date(),
+          userId: 'guest',
+          type: isInterview ? 'interview' : 'seminar'
+        };
+        await addDoc(collection(db, 'reports'), firestoreReport);
+        console.log("Report synced to Firestore");
+      } catch (e) {
+        console.warn("Firestore sync skipped:", e.message);
+      }
+    } catch (err) {
+      console.error("Save error:", err);
+    }
   };
 
   const analyzeAudio = async (file) => {
+    if (!file) return;
+    console.log("--- Starting Seminar Analysis ---", file.size);
     setAnalyzing(true);
     setError(null);
+    setResult(null); // Clear previous result
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      const response = await axios.post(`${apiUrl}/analyze-speech`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      });
+      console.log("Sending request to backend /analyze-speech...");
+      const response = await axios.post(`${apiUrl}/analyze-speech`, formData);
+      console.log("Seminar Response Received:", response.data);
 
       if (response.data.error) {
+        console.error("Backend error:", response.data.error);
         setError(response.data.error);
       } else {
-        const newResult = response.data;
-        setResult(newResult);
-        saveReport(newResult);
+        console.log("Setting result state...");
+        setResult(response.data);
+        // Non-blocking save
+        saveReport(response.data).catch(e => console.error("Auto-save failed:", e));
       }
     } catch (err) {
-      console.error(err);
-      setError("Failed to analyze speech. Make sure the backend is running.");
+      console.error("Analysis Axios error:", err);
+      setError("Failed to analyze speech. Check if backend is running at " + apiUrl);
     } finally {
       setAnalyzing(false);
     }
@@ -821,76 +863,20 @@ const VRRoom = () => {
           left: 0,
           width: '100%',
           height: '100%',
-          backgroundColor: '#0f172a',
+          backgroundColor: 'var(--bg-primary)',
           zIndex: 100,
           overflowY: 'auto',
           padding: isMobile ? '1rem' : '2rem'
         }}>
           <div style={{ maxWidth: '900px', margin: '0 auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? '1rem' : '0' }}>
-              <h1 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 'bold', color: 'white' }}>Interview Performance</h1>
+              <h1 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>
+                {isInterviewRoom ? "Interview Performance" : "Seminar Analysis"}
+              </h1>
               <Button onClick={resetSession} variant="primary">Start New Session</Button>
             </div>
             
-            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
-              <div style={{ backgroundColor: '#1e293b', padding: '1.5rem', borderRadius: '12px', textAlign: 'center' }}>
-                <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginBottom: '0.5rem' }}>Clarity</p>
-                <h2 style={{ fontSize: '2rem', fontWeight: 'bold', color: '#2563eb' }}>{result.clarity}%</h2>
-              </div>
-              <div style={{ backgroundColor: '#1e293b', padding: '1.5rem', borderRadius: '12px', textAlign: 'center' }}>
-                <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginBottom: '0.5rem' }}>Confidence</p>
-                <h2 style={{ fontSize: '2rem', fontWeight: 'bold', color: '#059669' }}>{result.confidence}%</h2>
-              </div>
-              <div style={{ backgroundColor: '#1e293b', padding: '1.5rem', borderRadius: '12px', textAlign: 'center' }}>
-                <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginBottom: '0.5rem' }}>Fluency</p>
-                <h2 style={{ fontSize: '2rem', fontWeight: 'bold', color: '#7c3aed' }}>{result.fluency}%</h2>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '1rem' : '2rem' }}>
-               <div>
-                 <h3 style={{ fontSize: isMobile ? '1.1rem' : '1.2rem', fontWeight: '600', marginBottom: '1rem', color: 'white' }}>Detailed Feedback</h3>
-                 <div style={{ backgroundColor: '#1e293b', padding: isMobile ? '1rem' : '1.5rem', borderRadius: '12px' }}>
-                   <ul style={{ paddingLeft: '1.2rem' }}>
-                     {result.feedback && result.feedback.map((item, idx) => (
-                       <li key={idx} style={{ color: '#cbd5e1', marginBottom: '0.75rem', lineHeight: '1.5', fontSize: isMobile ? '0.85rem' : '1rem' }}>{item}</li>
-                     ))}
-                   </ul>
-                 </div>
-               </div>
-
-               <div>
-                 <h3 style={{ fontSize: isMobile ? '1.1rem' : '1.2rem', fontWeight: '600', marginBottom: '1rem', color: 'white' }}>Speech Metrics</h3>
-                 <div style={{ backgroundColor: '#1e293b', padding: isMobile ? '1rem' : '1.5rem', borderRadius: '12px' }}>
-                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                     <div style={{ borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
-                       <p style={{ color: '#94a3b8', fontSize: isMobile ? '0.7rem' : '0.8rem' }}>Pitch</p>
-                       <p style={{ fontWeight: '600', color: 'white', fontSize: isMobile ? '0.9rem' : '1rem' }}>{result.pitch} Hz</p>
-                     </div>
-                     <div style={{ borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
-                       <p style={{ color: '#94a3b8', fontSize: isMobile ? '0.7rem' : '0.8rem' }}>Volume</p>
-                       <p style={{ fontWeight: '600', color: 'white', fontSize: isMobile ? '0.9rem' : '1rem' }}>{typeof result.volume === 'number' ? result.volume.toFixed(3) : result.volume}</p>
-                     </div>
-                     <div style={{ borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
-                       <p style={{ color: '#94a3b8', fontSize: isMobile ? '0.7rem' : '0.8rem' }}>Tempo</p>
-                       <p style={{ fontWeight: '600', color: 'white', fontSize: isMobile ? '0.9rem' : '1rem' }}>{result.tempo} BPM</p>
-                     </div>
-                     <div style={{ borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
-                       <p style={{ color: '#94a3b8', fontSize: isMobile ? '0.7rem' : '0.8rem' }}>Articulation</p>
-                       <p style={{ fontWeight: '600', color: 'white', fontSize: isMobile ? '0.9rem' : '1rem' }}>{result.articulation}%</p>
-                     </div>
-                     <div style={{ borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
-                       <p style={{ color: '#94a3b8', fontSize: isMobile ? '0.7rem' : '0.8rem' }}>Fluency Score</p>
-                       <p style={{ fontWeight: '600', color: 'white', fontSize: isMobile ? '0.9rem' : '1rem' }}>{result.fluency_score}%</p>
-                     </div>
-                     <div style={{ borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
-                       <p style={{ color: '#94a3b8', fontSize: isMobile ? '0.7rem' : '0.8rem' }}>Silence Ratio</p>
-                       <p style={{ fontWeight: '600', color: 'white', fontSize: isMobile ? '0.9rem' : '1rem' }}>{result.silence_ratio}%</p>
-                     </div>
-                   </div>
-                 </div>
-               </div>
-             </div>
+            <AnalysisResult result={result} />
           </div>
         </div>
       )}

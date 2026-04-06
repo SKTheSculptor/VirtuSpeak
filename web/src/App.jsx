@@ -8,6 +8,7 @@ import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Landing from './pages/Landing';
 import VRRoom from './pages/VRRoom';
+import Progress from './pages/Progress';
 import PrivateRoute from './components/PrivateRoute';
 import Layout from './components/Layout';
 
@@ -24,6 +25,7 @@ function App() {
             <Route element={<PrivateRoute />}>
                <Route element={<Layout><Outlet /></Layout>}>
                   <Route path="/dashboard" element={<Dashboard />} />
+                  <Route path="/progress" element={<Progress />} />
                   <Route path="/reports" element={<Reports />} />
                   <Route path="/settings" element={<Settings />} />
                </Route>
